@@ -7,6 +7,12 @@ from model import CamEncoder
 from splat import VoxelPooling
 from tqdm import tqdm
 import os
+import csv
+import json
+import time
+import matplotlib
+matplotlib.use('Agg')  # 디스플레이 없이 PNG 저장
+import matplotlib.pyplot as plt
 
 # --------------------------------------------------
 # 1. LSS Model (유지)
@@ -148,10 +154,39 @@ def main():
     
     scaler = torch.amp.GradScaler('cuda') # 또는 device='cuda'
 
-    print(f"🚀 학습 시작! (Max Epochs: {epochs}, Patience: {patience})")
-    
+    # === 결과 저장 폴더 ===
+    os.makedirs("results", exist_ok=True)
+    log_path = "results/train_log.csv"
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "loss", "lr", "best_loss"])
+
+    train_info = {
+        "model": "LSS (Lift-Splat-Shoot)",
+        "backbone": "ResNet18",
+        "dataset": "NuScenes mini (v1.0-mini)",
+        "num_classes": 4,
+        "classes": ["Empty", "Car", "Truck/Bus", "Pedestrian/Bike"],
+        "xbound": [-50, 50, 0.5],
+        "ybound": [-50, 50, 0.5],
+        "zbound": [-2.0, 6.0, 2.0],
+        "dbound": [4, 45, 1],
+        "img_size": [384, 1056],
+        "batch_size": batch_size,
+        "accumulation_steps": accumulation_steps,
+        "effective_batch": batch_size * accumulation_steps,
+        "learning_rate": learning_rate,
+        "epochs_max": epochs,
+        "patience": patience,
+        "device": str(device),
+    }
+
+    loss_history = []
+    print(f"학습 시작! (Max Epochs: {epochs}, Patience: {patience})")
+    start_time = time.time()
+
     best_loss = float('inf')
-    
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0
@@ -195,24 +230,49 @@ def main():
             current_lr = learning_rate
 
         print(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f} (LR: {current_lr:.6f})")
-        
+        loss_history.append(avg_loss)
+
         # === [Early Stopping 로직] ===
         if avg_loss < best_loss:
             best_loss = avg_loss
-            counter = 0  # 신기록 갱신! 카운터 초기화
+            counter = 0
             torch.save(model.state_dict(), "best_semantic_mini_model.pth")
-            print(f"  ✅ 최고 기록 갱신! 모델 저장됨 (Loss: {best_loss:.4f})")
+            print(f"  [Best] 모델 저장 (Loss: {best_loss:.4f})")
         else:
-            counter += 1 # 발전 없음. 카운터 증가
-            print(f"  ⚠️ 발전 없음 ({counter}/{patience})")
-            
+            counter += 1
+            print(f"  [No improve] ({counter}/{patience})")
             if counter >= patience:
-                print("\n" + "="*40)
-                print(f"⛔ 조기 종료 (Early Stopping) 발동!")
-                print(f"   - {patience} 에폭 동안 성능 향상이 없어 학습을 종료합니다.")
-                print(f"   - 저장된 최고 성능 모델(best_semantic_model.pth)을 사용하세요.")
-                print("="*40)
-                break # 학습 루프 탈출
+                print(f"\nEarly Stopping: {patience} epoch 동안 향상 없음")
+                break
+
+        # CSV 로그 기록
+        with open(log_path, "a", newline="") as f:
+            csv.writer(f).writerow([epoch + 1, f"{avg_loss:.6f}", f"{current_lr:.8f}", f"{best_loss:.6f}"])
+
+    # === 학습 완료: 손실 그래프 저장 ===
+    elapsed = time.time() - start_time
+    train_info["epochs_trained"] = len(loss_history)
+    train_info["best_loss"] = round(best_loss, 6)
+    train_info["elapsed_sec"] = round(elapsed, 1)
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(range(1, len(loss_history) + 1), loss_history, color='royalblue', linewidth=1.5)
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"Training Loss (best={best_loss:.4f}, epochs={len(loss_history)})")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("results/loss_curve.png", dpi=120)
+    plt.close()
+
+    with open("results/train_info.json", "w") as f:
+        json.dump(train_info, f, indent=2, ensure_ascii=False)
+
+    print(f"\n학습 완료! ({elapsed/60:.1f}분)")
+    print(f"  Best Loss : {best_loss:.4f}")
+    print(f"  로그 저장 : results/train_log.csv")
+    print(f"  그래프    : results/loss_curve.png")
+    print(f"  설정 정보 : results/train_info.json")
 
 if __name__ == "__main__":
     main()

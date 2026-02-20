@@ -1,4 +1,7 @@
 import torch
+import os
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -115,7 +118,10 @@ def check():
                fontsize=9, bbox_to_anchor=(0.5, 0.01))
 
     plt.tight_layout(rect=[0, 0.05, 1, 0.97])
-    plt.show()
+    os.makedirs("results", exist_ok=True)
+    plt.savefig("results/check_result_3d.png", dpi=120, bbox_inches='tight')
+    plt.close()
+    print("결과 저장: results/check_result_3d.png")
 
 
 if __name__ == "__main__":
