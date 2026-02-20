@@ -1,0 +1,23 @@
+{
+  "model": "LSS (Lift-Splat-Shoot)",
+  "backbone": "ResNet18",
+  "dataset": "NuScenes mini (v1.0-mini)",
+  "num_classes": 4,
+  "classes": [
+    "Empty",
+    "Car",
+    "Truck/Bus",
+    "Pedestrian/Bike"
+  ],
+  "img_size": [
+    384,
+    1056
+  ],
+  "batch_size": 4,
+  "accumulation_steps": 2,
+  "effective_batch": 8,
+  "learning_rate": 0.0003,
+  "epochs_trained": 11,
+  "best_loss": 0.479974,
+  "device": "cuda (NVIDIA GeForce RTX 5070 Laptop GPU)"
+}

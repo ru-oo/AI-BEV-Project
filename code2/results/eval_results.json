@@ -1,0 +1,37 @@
+{
+  "model_path": "best_semantic_mini_model.pth",
+  "dataset": "nuscenes-mini",
+  "threshold": "argmax",
+  "mIoU_all": 25.18,
+  "mIoU_fg": 0.59,
+  "per_class": {
+    "Empty": {
+      "iou": 0.989519,
+      "iou_pct": 98.95,
+      "tp": 63955991,
+      "fp": 662628,
+      "fn": 14778
+    },
+    "Car": {
+      "iou": 0.0,
+      "iou_pct": 0.0,
+      "tp": 0,
+      "fp": 697,
+      "fn": 228416
+    },
+    "Truck/Bus": {
+      "iou": 0.017798,
+      "iou_pct": 1.78,
+      "tp": 5809,
+      "fp": 13563,
+      "fn": 307006
+    },
+    "Pedestrian/Bike": {
+      "iou": 1.5e-05,
+      "iou_pct": 0.0,
+      "tp": 2,
+      "fp": 1310,
+      "fn": 127998
+    }
+  }
+}

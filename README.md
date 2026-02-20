@@ -115,19 +115,40 @@ python make_video.py      # 주행 영상 → driving_demo2.mp4
 
 ---
 
-## 결과
+## 결과 (7 Epoch 초기 학습)
 
-> 학습 후 `results/eval_results.json` 참고
+> GPU: NVIDIA GeForce RTX 5070 Laptop | Dataset: NuScenes mini (404 samples)
+
+### 손실 곡선
+
+![Loss Curve](code2/results/loss_curve.png)
+
+| Epoch | Loss |
+|-------|------|
+| 1 | 1.2841 |
+| 3 | 0.9510 |
+| 5 | 0.7647 |
+| **7 (Best)** | **0.6553** |
+
+### 클래스별 3D mIoU
 
 | 클래스 | IoU |
 |--------|-----|
-| Empty | — |
-| Car | — |
-| Truck/Bus | — |
-| Pedestrian/Bike | — |
-| **전경 mIoU** | **—** |
+| Empty (배경) | 98.95% |
+| Car | 0.00% |
+| Truck/Bus | 1.78% |
+| Pedestrian/Bike | 0.00% |
+| **전체 mIoU (4 classes)** | **25.18%** |
+| **전경 mIoU (Empty 제외)** | **0.59%** |
 
-*(학습 완료 후 업데이트 예정)*
+> 초기 7 epoch 학습 결과입니다. 배경(Empty)이 공간의 대부분을 차지하므로
+> 전경 클래스는 충분한 학습(50+ epoch)이 이루어지면 성능이 향상됩니다.
+
+### BEV 시각화
+
+![Semantic BEV](code2/results/semantic_bev_3d.png)
+
+![Check Result](code2/results/check_result_3d.png)
 
 ---
 
