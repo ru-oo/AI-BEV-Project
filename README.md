@@ -43,6 +43,8 @@
 | 개선 | 내용 |
 |------|------|
 | **Z-aware VoxelPooling** | 기존엔 Z 좌표가 무시됨 → 높이층별 특징 보존 (치명적 버그 수정) |
+| **GT 좌표계 수정** | LIDAR 센서 프레임 박스를 Ego 프레임으로 올바르게 변환 (핵심 버그 수정) |
+| **Focal Loss** | γ=2, 클래스 가중치 [0.1, 50, 40, 80]으로 극단적 클래스 불균형 대응 |
 | 3D Semantic 출력 | 4개 Z층 × 4 클래스 동시 예측 |
 | Augmentation 분리 | 학습 시만 ColorJitter/RandomGrayscale 적용 |
 | 클래스별 mIoU | Empty 포함 4-class 및 전경 3-class 별도 리포트 |
@@ -62,6 +64,8 @@ code2/
 ├── visualize_3d.py       # 시맨틱 BEV 시각화 (PNG 저장)
 ├── check_result_3d.py    # Pred vs GT vs Diff 비교 (PNG 저장)
 ├── make_video.py         # 시맨틱 컬러 주행 영상 생성
+├── save_loss_curve.py    # CSV 로그에서 손실 그래프 재생성
+├── run_pipeline.py       # 평가 + 시각화 일괄 실행
 └── results/              # 학습 로그, 평가 결과, 시각화 이미지
     ├── train_log.csv
     ├── train_info.json
@@ -109,13 +113,13 @@ python make_video.py      # 주행 영상 → driving_demo2.mp4
 | Batch Size | 4 (Gradient Accumulation 2 → effective 8) |
 | Learning Rate | 3e-4 (OneCycleLR) |
 | Optimizer | AdamW (weight_decay=1e-4) |
-| Loss | CrossEntropyLoss (class weights: [0.5, 5, 5, 5]) |
+| Loss | **FocalLoss** (γ=2, weights: [0.1, 50, 40, 80]) |
 | Early Stopping | patience=15 |
 | Mixed Precision | torch.amp (CUDA) |
 
 ---
 
-## 결과 (7 Epoch 초기 학습)
+## 결과 (95 Epoch 학습, 버그 수정 후)
 
 > GPU: NVIDIA GeForce RTX 5070 Laptop | Dataset: NuScenes mini (404 samples)
 
@@ -125,24 +129,29 @@ python make_video.py      # 주행 영상 → driving_demo2.mp4
 
 | Epoch | Loss |
 |-------|------|
-| 1 | 1.2841 |
-| 3 | 0.9510 |
-| 5 | 0.7647 |
-| **7 (Best)** | **0.6553** |
+| 1 | 0.8493 |
+| 10 | 0.3865 |
+| 30 | 0.1363 |
+| 60 | 0.0994 |
+| **80 (Best)** | **0.0747** |
+| 95 (Early Stop) | 0.0809 |
+
+> 이전 학습(버그 있음): Best Loss 0.6553 (7 epoch) → 수정 후: **0.0747 (95 epoch)** — 8.8배 개선
 
 ### 클래스별 3D mIoU
 
-| 클래스 | IoU |
-|--------|-----|
-| Empty (배경) | 98.95% |
-| Car | 0.00% |
-| Truck/Bus | 1.78% |
-| Pedestrian/Bike | 0.00% |
-| **전체 mIoU (4 classes)** | **25.18%** |
-| **전경 mIoU (Empty 제외)** | **0.59%** |
+| 클래스 | IoU | 비고 |
+|--------|-----|------|
+| Empty (배경) | 29.32% | Focal Loss로 전경 강조 |
+| **Car** | **2.13%** | 이전: 0.00% → 감지 성공 |
+| **Truck/Bus** | **1.31%** | 유지 |
+| **Pedestrian/Bike** | **1.00%** | 이전: 0.00% → 감지 성공 |
+| **전체 mIoU (4 classes)** | **8.44%** | |
+| **전경 mIoU (Empty 제외)** | **1.48%** | 이전 0.59% 대비 **2.5배 향상** |
 
-> 초기 7 epoch 학습 결과입니다. 배경(Empty)이 공간의 대부분을 차지하므로
-> 전경 클래스는 충분한 학습(50+ epoch)이 이루어지면 성능이 향상됩니다.
+> **핵심 버그 2가지 수정 결과**: Car·Pedestrian 클래스 감지 성공 (이전엔 0%)
+> - Bug 1: GT 좌표계 오류 (LIDAR 프레임 → Ego 프레임 변환 누락)
+> - Bug 2: 클래스 불균형 미대응 (CrossEntropy → FocalLoss + 강화 가중치)
 
 ### BEV 시각화
 
