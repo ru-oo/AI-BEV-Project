@@ -1,33 +1,31 @@
 """
-model_fastocc.py — FastOcc (Fast 3D Semantic Occupancy)
-========================================================
+model_fastocc.py — FastOcc 6-Camera Surround (v3)
+==================================================
+
+★ 6카메라 서라운드뷰 기반 3D Semantic Occupancy ★
 
 LSS와의 근본적 차이:
-  LSS    : 학습된 깊이 분포(D bins) → frustum 피처 볼륨 → voxel pooling(splat)
-  FastOcc: 복셀 중심 → 카메라 기하학적 투영 → grid_sample + Channel-to-Height(C2H)
+  LSS    : 카메라별 학습된 깊이 분포(D bins) → frustum 피처 → voxel pooling(splat)
+  FastOcc: 복셀 중심 → 각 카메라 기하학적 투영 → grid_sample → 다중카메라 집계
+           D-bin 깊이 분포 없음, frustum pooling 없음
 
-구조 (FlashOcc/FastBEV 개념 기반):
-  EfficientNet-B2 → FPN Neck (P3, P4, P5)
-      │
-  [Voxel Query Sampler]  ← 복셀 중심을 이미지에 투영, bilinear sample
-      │  기하학적 투영: world(x,y,z) → cam → K → image (u,v)
-      │  ★ D-bin 깊이 분포 없음 — LSS와 완전히 다름
-      │
-  (B, C, nZ, nX, nY)  ← 3D feature volume
-      │
-  [Channel-to-Height (C2H) Refiner]  ← 채널↔높이 치환으로 2D 연산만 사용
-      │  (B, C, nZ, nX, nY) → (B, C*nZ, nX, nY) → 2D conv → (B, C*nZ, nX, nY) → reshape
-      │
-  [Classifier]  → (B, num_classes, nZ, nX, nY)
-
-장점:
-  - LSS frustum pooling 없음 → 빠름
-  - Channel-to-Height → 3D conv 불필요 → VRAM 절약
-  - 단일 카메라로 동작
-  - 실시간 추론 가능
-
-클래스 (5):
-  0=Free, 1=Road, 2=Vehicle, 3=Pedestrian, 4=StaticObstacle
+6카메라 처리 흐름:
+  (B, 6, 3, H, W)  ← 전방/전방좌/전방우/후방/후방좌/후방우
+        │
+  [공유 EfficientNet-B2 + FPN]  — 6장 동시 인코딩
+        │ (B, 6, C, H/8, W/8)
+        │
+  [Multi-Cam Voxel Query Sampler]  ★ 핵심 — LSS 아님 ★
+    복셀 중심(x,y,z) → ego→cam 변환 → K 투영
+    → 유효 카메라 grid_sample → 카메라간 평균 집계
+        │ (B, C, nZ, nX, nY)
+        │
+  [Channel-to-Height (C2H) Refiner]  — 2D conv으로 3D 표현
+        │ (B, c2h_ch, nZ, nX, nY)
+        │
+  [3D Classifier]
+        │
+  (B, num_classes, nZ, nX, nY)
 """
 
 import torch
@@ -35,271 +33,275 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ══════════════════════════════════════════════════════
-# 백본: EfficientNet-B2 + FPN
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# EfficientNet-B2 + FPN 백본
+# ══════════════════════════════════════════════════════════════
 class EfficientFPN(nn.Module):
-    """EfficientNet-B2 → FPN → P3/P4/P5 (모두 out_ch 채널)"""
+    """EfficientNet-B2 + 3-scale FPN → P3 (H/8, W/8, out_ch)"""
 
     def __init__(self, out_ch=128, pretrained=True):
         super().__init__()
         from torchvision.models import efficientnet_b2, EfficientNet_B2_Weights
-        weights = EfficientNet_B2_Weights.IMAGENET1K_V1 if pretrained else None
-        net = efficientnet_b2(weights=weights)
-        f = net.features
+        w = EfficientNet_B2_Weights.IMAGENET1K_V1 if pretrained else None
+        f = efficientnet_b2(weights=w).features
 
-        # Stage 분리 (EfficientNet-B2 stage별 출력 채널)
-        self.s3 = f[:4]    # out: 48ch
-        self.s4 = f[4:6]   # out: 120ch
-        self.s5 = f[6:]    # out: 1408ch
+        # EfficientNet-B2 stage 출력 채널 (실측):
+        # features[:4]  → 48ch  @ H/8
+        # features[4:6] → 120ch @ H/16
+        # features[6:]  → 1408ch@ H/32
+        self.s3 = f[:4]    # 48ch
+        self.s4 = f[4:6]   # 120ch
+        self.s5 = f[6:]    # 1408ch
 
-        self.lat5 = nn.Sequential(nn.Conv2d(1408, out_ch, 1, bias=False),
-                                   nn.BatchNorm2d(out_ch), nn.ReLU(True))
-        self.lat4 = nn.Sequential(nn.Conv2d(120,  out_ch, 1, bias=False),
-                                   nn.BatchNorm2d(out_ch), nn.ReLU(True))
-        self.lat3 = nn.Sequential(nn.Conv2d(48,   out_ch, 1, bias=False),
-                                   nn.BatchNorm2d(out_ch), nn.ReLU(True))
+        self.lat5 = nn.Sequential(
+            nn.Conv2d(1408, out_ch, 1, bias=False),
+            nn.BatchNorm2d(out_ch), nn.ReLU(True))
+        self.lat4 = nn.Sequential(
+            nn.Conv2d(120,  out_ch, 1, bias=False),
+            nn.BatchNorm2d(out_ch), nn.ReLU(True))
+        self.lat3 = nn.Sequential(
+            nn.Conv2d(48,   out_ch, 1, bias=False),
+            nn.BatchNorm2d(out_ch), nn.ReLU(True))
+        self.out3 = nn.Sequential(
+            nn.Conv2d(out_ch, out_ch, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(out_ch), nn.ReLU(True))
 
-        self.out3 = nn.Sequential(nn.Conv2d(out_ch, out_ch, 3, 1, 1, bias=False),
-                                   nn.BatchNorm2d(out_ch), nn.ReLU(True))
-
-        print(f"[FastOcc] 백본: EfficientNet-B2 + FPN (out={out_ch}ch)")
+        print(f"[FastOcc] 백본: EfficientNet-B2 + FPN ({out_ch}ch)")
 
     def forward(self, x):
-        c3 = self.s3(x)   # 48ch  @ H/8, W/8  (e.g. 28×50)
-        c4 = self.s4(c3)  # 120ch @ H/16,W/16 (e.g. 14×25)
-        c5 = self.s5(c4)  # 1408ch@ H/32,W/32 (e.g.  7×13)
+        # x: (B*N, 3, H, W) — 6카메라를 배치로 처리
+        c3 = self.s3(x)   # 48ch,  H/8
+        c4 = self.s4(c3)  # 120ch, H/16
+        c5 = self.s5(c4)  # 1408ch,H/32
         p5 = self.lat5(c5)
-        # 홀수 크기 불일치 방지: scale_factor 대신 size= 사용
+        # 홀수 해상도 불일치 방지 → size= 사용
         p4 = self.lat4(c4) + F.interpolate(p5, size=c4.shape[-2:], mode='nearest')
         p3 = self.lat3(c3) + F.interpolate(p4, size=c3.shape[-2:], mode='nearest')
-        return self.out3(p3)   # (B, out_ch, H/8, W/8)
+        return self.out3(p3)   # (B*N, out_ch, H/8, W/8)
 
 
-# ══════════════════════════════════════════════════════
-# 핵심 1: Voxel Query Sampler (LSS 아님)
-# ══════════════════════════════════════════════════════
-class VoxelQuerySampler(nn.Module):
+# ══════════════════════════════════════════════════════════════
+# Multi-Camera Voxel Query Sampler (핵심 — LSS 아님)
+# ══════════════════════════════════════════════════════════════
+class MultiCamVoxelSampler(nn.Module):
     """
-    각 3D 복셀 중심을 이미지 평면에 투영하여 feature를 샘플링.
+    6카메라 서라운드뷰에서 3D 복셀 피처 추출
 
-    LSS의 차이:
-      LSS  : 픽셀마다 D개 깊이 빈의 확률 → outer product → frustum 풀링
-      FastOcc: 복셀 중심(x,y,z)을 K로 직접 투영 → bilinear grid_sample
-              → D-bin 깊이 분포 없음, learnable depth 없음
+    LSS와의 차이:
+      LSS  : 픽셀마다 D개 깊이 빈 확률 → outer product → frustum pool
+      FastOcc: 복셀 중심(x,y,z)을 각 카메라에 투영 → bilinear_grid_sample
+               → 유효 카메라 평균 (깊이 분포 학습 없음)
+
+    ego 좌표계:
+      x = 오른쪽, y = 전방(앞), z = 위
 
     Parameters
     ----------
-    xbound, ybound, zbound : (min, max, step) 복셀 범위
-    feat_ch  : 이미지 피처 채널 수
-    img_h/w  : 이미지 피처맵 크기 (다운샘플 후)
+    xbound, ybound, zbound : (min, max, step)
+    feat_h, feat_w : 피처맵 크기 (H/8, W/8)
     """
 
-    def __init__(self, xbound, ybound, zbound, feat_ch, img_h, img_w):
+    def __init__(self, xbound, ybound, zbound, feat_h, feat_w):
         super().__init__()
-        self.img_h = img_h
-        self.img_w = img_w
+        self.feat_h = feat_h
+        self.feat_w = feat_w
 
-        xmin, xmax, xstep = xbound
-        ymin, ymax, ystep = ybound
-        zmin, zmax, zstep = zbound
+        self.nX = int((xbound[1] - xbound[0]) / xbound[2])
+        self.nY = int((ybound[1] - ybound[0]) / ybound[2])
+        self.nZ = int((zbound[1] - zbound[0]) / zbound[2])
 
-        self.nX = int((xmax - xmin) / xstep)
-        self.nY = int((ymax - ymin) / ystep)
-        self.nZ = int((zmax - zmin) / zstep)
+        # 복셀 중심 좌표 (ego 프레임): (nZ, nX, nY, 3) = [x, y, z]
+        xs = torch.linspace(xbound[0] + xbound[2]/2, xbound[1] - xbound[2]/2, self.nX)
+        ys = torch.linspace(ybound[0] + ybound[2]/2, ybound[1] - ybound[2]/2, self.nY)
+        zs = torch.linspace(zbound[0] + zbound[2]/2, zbound[1] - zbound[2]/2, self.nZ)
 
-        # 복셀 중심 좌표 생성 (ego 좌표계): (nZ, nX, nY, 3)
-        xs = torch.arange(self.nX) * xstep + xmin + xstep/2
-        ys = torch.arange(self.nY) * ystep + ymin + ystep/2
-        zs = torch.arange(self.nZ) * zstep + zmin + zstep/2
-
-        # meshgrid → (nZ, nX, nY, 3) [x, y, z] in ego/world frame
         gz, gx, gy = torch.meshgrid(zs, xs, ys, indexing='ij')
-        # nuScenes convention: x=right, y=forward, z=up
-        # camera convention: X=right, Y=down, Z=forward
-        # ego→cam: x_cam=x, y_cam=-z, z_cam=y  (대략, 실제는 extrinsic 사용)
-        voxel_centers = torch.stack([gx, gy, gz], dim=-1)  # (nZ, nX, nY, 3)
-        self.register_buffer('voxel_centers', voxel_centers)
+        # (nZ, nX, nY, 4) homogeneous  [x, y, z, 1]
+        ones = torch.ones_like(gz)
+        vox_h = torch.stack([gx, gy, gz, ones], dim=-1)
+        self.register_buffer('vox_centers_h', vox_h)  # (nZ, nX, nY, 4)
 
-    def forward(self, feat: torch.Tensor, K: torch.Tensor,
-                sensor2ego: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, feats: torch.Tensor,
+                Ks: torch.Tensor,
+                sensor2ego: torch.Tensor) -> torch.Tensor:
         """
-        feat       : (B, C, H', W')  이미지 피처맵
-        K          : (B, 3, 3)       카메라 내부 파라미터
-        sensor2ego : (B, 4, 4)       카메라→ego 변환행렬 (선택)
+        feats      : (B, N, C, Hf, Wf)  — N=6 카메라 피처맵
+        Ks         : (B, N, 3, 3)        — 각 카메라 내부 파라미터
+        sensor2ego : (B, N, 4, 4)        — cam→ego 변환행렬
 
         Returns
         -------
-        voxel_feat : (B, C, nZ, nX, nY)
+        voxel : (B, C, nZ, nX, nY)
         """
-        B, C, Hf, Wf = feat.shape
-        device = feat.device
+        B, N, C, Hf, Wf = feats.shape
+        device = feats.device
         nZ, nX, nY = self.nZ, self.nX, self.nY
 
-        # 복셀 중심 (nZ*nX*nY, 3) → ego XYZ
-        centers = self.voxel_centers.to(device)       # (nZ, nX, nY, 3)
-        pts = centers.reshape(-1, 3)                   # (N, 3)  N=nZ*nX*nY
-        N = pts.shape[0]
+        # 복셀 중심: (nZ*nX*nY, 4) homogeneous
+        centers = self.vox_centers_h.to(device)          # (nZ, nX, nY, 4)
+        pts_h   = centers.reshape(-1, 4)                 # (M, 4)  M=nZ*nX*nY
 
-        # ── ego → camera 변환 ──────────────────────
-        if sensor2ego is not None:
-            # sensor2ego: camera→ego, 역변환 = ego→camera
-            # (B, 4, 4)
-            ego2cam_R = sensor2ego[:, :3, :3].transpose(1, 2)   # (B,3,3)
-            ego2cam_t = -torch.bmm(ego2cam_R,
-                         sensor2ego[:, :3, 3:])                  # (B,3,1)
-            # pts: (N,3) → (B,N,3)
-            pts_b = pts.unsqueeze(0).expand(B, -1, -1)           # (B,N,3)
-            pts_cam = torch.bmm(pts_b, ego2cam_R.transpose(1,2)) \
-                      + ego2cam_t.transpose(1, 2)                 # (B,N,3)
-        else:
-            # 카메라가 ego 원점에 있다고 가정 (단순화)
-            # nuScenes front cam: 대략 x=0, y=1.5, z=1.5m
-            t_default = torch.tensor([0.0, 1.5, 1.5], device=device)
-            pts_cam = pts.unsqueeze(0).expand(B, -1, -1).clone()
-            pts_cam[..., 1] = pts_cam[..., 1] - t_default[1]
-            pts_cam[..., 2] = pts_cam[..., 2] - t_default[2]
-            # ego(x,y,z) → cam(X=x, Y=-z+h, Z=y-d)
-            x_c =  pts_cam[..., 0]
-            y_c = -pts_cam[..., 2]          # ego z → cam -Y
-            z_c =  pts_cam[..., 1]          # ego y → cam Z (depth)
-            pts_cam = torch.stack([x_c, y_c, z_c], dim=-1)
+        # ego→cam 역변환: sensor2ego는 cam→ego
+        # ego→cam = inv(sensor2ego)
+        # (B, N, 4, 4)
+        s2e = sensor2ego                                  # (B, N, 4, 4)
+        R   = s2e[:, :, :3, :3]   # (B, N, 3, 3)  cam rotation
+        t   = s2e[:, :, :3,  3]   # (B, N, 3)     cam translation
+        # ego→cam: R^T @ (pt - t)
+        Rt  = R.transpose(2, 3)   # (B, N, 3, 3)
 
-        # ── K 투영: cam_3d → image (u, v) ─────────
-        # K: (B,3,3), pts_cam: (B,N,3)
-        fx = K[:, 0, 0].view(B, 1)   # (B,1)
-        fy = K[:, 1, 1].view(B, 1)
-        cx = K[:, 0, 2].view(B, 1)
-        cy = K[:, 1, 2].view(B, 1)
+        # pts_ego: (M, 3)
+        pts_ego = pts_h[:, :3]    # (M, 3)
 
-        Z  = pts_cam[..., 2].clamp(min=0.1)   # (B,N) depth > 0
-        u  = pts_cam[..., 0] * fx / Z + cx    # (B,N) pixel u
-        v  = pts_cam[..., 1] * fy / Z + cy    # (B,N) pixel v
+        # → (B, N, M, 3)
+        pts_ego_bn = pts_ego.unsqueeze(0).unsqueeze(0).expand(B, N, -1, -1)
+        t_bn       = t.unsqueeze(2)                      # (B, N, 1, 3)
+        pts_cam    = torch.matmul(pts_ego_bn - t_bn, Rt) # (B, N, M, 3)
+        # (X_cam, Y_cam, Z_cam): Z_cam = 깊이 (전방)
 
-        # ── grid_sample 좌표 정규화 [-1, 1] ────────
-        # feat은 (B, C, Hf, Wf) 피처맵
-        u_norm = (u / (self.img_w - 1)) * 2.0 - 1.0   # (B,N)
-        v_norm = (v / (self.img_h - 1)) * 2.0 - 1.0
+        # K 투영: (B, N, 3, 3) × (B, N, M, 3)^T
+        Xc = pts_cam[..., 0]   # (B, N, M)
+        Yc = pts_cam[..., 1]
+        Zc = pts_cam[..., 2]   # depth
 
-        # 유효한 투영 마스크 (이미지 안, 양수 depth)
-        valid = (Z > 0.5) & (u_norm >= -1) & (u_norm <= 1) \
-                         & (v_norm >= -1) & (v_norm <= 1)  # (B,N)
+        fx = Ks[:, :, 0, 0].unsqueeze(-1)   # (B, N, 1)
+        fy = Ks[:, :, 1, 1].unsqueeze(-1)
+        cx = Ks[:, :, 0, 2].unsqueeze(-1)
+        cy = Ks[:, :, 1, 2].unsqueeze(-1)
 
-        # grid_sample: (B, C, 1, N) grid (B, 1, N, 2)
-        grid = torch.stack([u_norm, v_norm], dim=-1)   # (B,N,2)
-        grid = grid.unsqueeze(1)                        # (B,1,N,2)
+        # 양수 깊이만 유효
+        eps   = 1e-4
+        valid = Zc > eps                                  # (B, N, M)
 
-        # feat: (B,C,Hf,Wf) → sample at grid → (B,C,1,N)
-        sampled = F.grid_sample(feat, grid,
-                                mode='bilinear',
-                                padding_mode='zeros',
-                                align_corners=True)     # (B,C,1,N)
-        sampled = sampled.squeeze(2)                    # (B,C,N)
+        u = Xc * fx / Zc.clamp(min=eps) + cx             # (B, N, M) pixel u
+        v = Yc * fy / Zc.clamp(min=eps) + cy             # (B, N, M) pixel v
 
-        # 유효하지 않은 포인트 마스킹
-        valid_mask = valid.unsqueeze(1).float()         # (B,1,N)
-        sampled = sampled * valid_mask
+        # 정규화 [-1, 1] (grid_sample 형식)
+        u_n = (u / (self.feat_w - 1)) * 2 - 1            # (B, N, M)
+        v_n = (v / (self.feat_h - 1)) * 2 - 1
 
-        # (B,C,N) → (B,C,nZ,nX,nY)
-        voxel_feat = sampled.reshape(B, C, nZ, nX, nY)
+        # 이미지 범위 내 유효 마스크
+        valid = valid & (u_n >= -1) & (u_n <= 1) & (v_n >= -1) & (v_n <= 1)
 
-        return voxel_feat
+        # grid_sample: feats (B,N,C,Hf,Wf) → sample at M points
+        # feats를 (B*N, C, Hf, Wf)로 reshape
+        feats_flat = feats.reshape(B * N, C, Hf, Wf)
+
+        # grid: (B*N, 1, M, 2)
+        grid = torch.stack([u_n, v_n], dim=-1)            # (B, N, M, 2)
+        grid = grid.reshape(B * N, 1, -1, 2)              # (B*N, 1, M, 2)
+
+        sampled = F.grid_sample(
+            feats_flat, grid,
+            mode='bilinear',
+            padding_mode='zeros',
+            align_corners=True)                            # (B*N, C, 1, M)
+        sampled = sampled.reshape(B, N, C, -1)             # (B, N, C, M)
+
+        # 유효하지 않은 위치 마스킹
+        valid_mask = valid.float().unsqueeze(2)             # (B, N, 1, M)
+        sampled    = sampled * valid_mask
+
+        # 카메라간 집계: 유효 카메라 수로 나눠 평균
+        n_valid = valid_mask.sum(dim=1).clamp(min=1)       # (B, 1, M)
+        vox_feat = sampled.sum(dim=1) / n_valid            # (B, C, M)
+
+        # (B, C, M) → (B, C, nZ, nX, nY)
+        voxel = vox_feat.reshape(B, C, nZ, nX, nY)
+
+        return voxel
 
 
-# ══════════════════════════════════════════════════════
-# 핵심 2: Channel-to-Height (C2H) Refiner
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# Channel-to-Height (C2H) Refiner
+# ══════════════════════════════════════════════════════════════
 class C2HRefiner(nn.Module):
     """
-    Channel-to-Height (C2H) — FastOcc/FlashOcc 핵심 아이디어
+    Channel-to-Height: 3D 연산 없이 2D conv으로 높이 차원 표현
 
-    3D conv 없이 2D conv만으로 3D 피처를 정제:
-      입력 : (B, C, nZ, nX, nY)
+    (B, C, nZ, nX, nY)
       → flatten: (B, C*nZ, nX, nY)
-      → 2D conv (depth-wise + point-wise)
-      → reshape: (B, C, nZ, nX, nY)
+      → depthwise + pointwise 2D conv
+      → reshape: (B, mid_ch, nZ, nX, nY)
 
-    3D conv 대비 장점:
-      - VRAM 절약 (CUDA 2D 최적화)
-      - 빠른 연산
-      - 채널 간 상호작용으로 높이 맥락 포착
+    FlashOcc/FastBEV 에서 제안된 핵심 아이디어
     """
 
-    def __init__(self, feat_ch, nZ, mid_ch=64):
+    def __init__(self, in_ch, nZ, mid_ch=64):
         super().__init__()
-        in_ch = feat_ch * nZ
-
+        flat_in  = in_ch  * nZ
+        flat_out = mid_ch * nZ
         self.net = nn.Sequential(
-            # Depth-wise: 높이 정보 혼합
-            nn.Conv2d(in_ch, in_ch, 3, 1, 1, groups=nZ, bias=False),
-            nn.BatchNorm2d(in_ch), nn.ReLU(True),
-            # Point-wise: 채널 정제
-            nn.Conv2d(in_ch, mid_ch * nZ, 1, bias=False),
-            nn.BatchNorm2d(mid_ch * nZ), nn.ReLU(True),
-            nn.Conv2d(mid_ch * nZ, mid_ch * nZ, 3, 1, 1,
+            # Depthwise: 높이 슬라이스 내 공간 정보
+            nn.Conv2d(flat_in, flat_in, 3, 1, 1,
                       groups=nZ, bias=False),
-            nn.BatchNorm2d(mid_ch * nZ), nn.ReLU(True),
+            nn.BatchNorm2d(flat_in), nn.ReLU(True),
+            # Pointwise: 채널 간 믹싱 (높이 간 상호작용)
+            nn.Conv2d(flat_in, flat_out, 1, bias=False),
+            nn.BatchNorm2d(flat_out), nn.ReLU(True),
+            nn.Conv2d(flat_out, flat_out, 3, 1, 1,
+                      groups=nZ, bias=False),
+            nn.BatchNorm2d(flat_out), nn.ReLU(True),
         )
         self.mid_ch = mid_ch
         self.nZ     = nZ
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, C, nZ, nX, nY) → (B, mid_ch, nZ, nX, nY)"""
+    def forward(self, x):
+        # x: (B, C, nZ, nX, nY)
         B, C, nZ, nX, nY = x.shape
-        x_flat = x.reshape(B, C * nZ, nX, nY)      # flatten Z into ch
-        x_flat = self.net(x_flat)                    # 2D conv
-        x_out  = x_flat.reshape(B, self.mid_ch, nZ, nX, nY)
-        return x_out
+        flat = x.reshape(B, C * nZ, nX, nY)
+        flat = self.net(flat)
+        return flat.reshape(B, self.mid_ch, nZ, nX, nY)
 
 
-# ══════════════════════════════════════════════════════
-# FastOcc 메인 모델
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# FastOcc 메인 모델 (6-Camera Surround)
+# ══════════════════════════════════════════════════════════════
 class FastOcc(nn.Module):
     """
-    FastOcc: 기하학적 복셀 샘플링 + Channel-to-Height 3D Occupancy
+    FastOcc — 6카메라 서라운드뷰 3D Semantic Occupancy
 
-    Parameters
-    ----------
-    xbound, ybound, zbound : (min, max, step)  복셀 범위 [m]
-    num_classes : 의미 클래스 수
-    fpn_ch      : FPN 출력 채널
-    c2h_ch      : C2H 중간 채널 (메모리/속도 트레이드오프)
-    img_h, img_w: 입력 이미지 크기
+    입력: 6방향 카메라 (전방·전방좌·전방우·후방·후방좌·후방우)
+    출력: 3D Semantic Occupancy (nZ × nX × nY)
+
+    vs LSS:
+      - 카메라당 D-bin 깊이 확률 학습 없음
+      - frustum voxel pooling(splat) 없음
+      - 순수 기하학적 복셀 투영 + 다중카메라 평균
+      - Channel-to-Height로 3D conv 최소화
     """
 
     def __init__(self,
-                 xbound=(-25., 25., .5),
-                 ybound=(-25., 25., .5),
+                 xbound=(-50., 50., .5),
+                 ybound=(-50., 50., .5),
                  zbound=(-2.,  6.,  .5),
                  num_classes=5,
                  fpn_ch=128,
                  c2h_ch=64,
-                 img_h=224,
-                 img_w=400):
+                 img_h=256,
+                 img_w=704,
+                 num_cams=6):
         super().__init__()
         self.num_classes = num_classes
+        self.num_cams    = num_cams
 
-        nZ = int((zbound[1] - zbound[0]) / zbound[2])
-        nX = int((xbound[1] - xbound[0]) / xbound[2])
-        nY = int((ybound[1] - ybound[0]) / ybound[2])
-        self.nZ = nZ
-        self.nX = nX
-        self.nY = nY
+        self.nZ = int((zbound[1] - zbound[0]) / zbound[2])
+        self.nX = int((xbound[1] - xbound[0]) / xbound[2])
+        self.nY = int((ybound[1] - ybound[0]) / ybound[2])
 
-        # 피처맵 크기 (EfficientNet-B2 FPN P3: 1/8 다운샘플)
+        # EfficientNet-B2 P3 기준 피처맵 크기
         feat_h = img_h // 8
         feat_w = img_w // 8
 
-        # ── 모듈 ──────────────────────────────────
+        # ── 모듈 ──────────────────────────────────────
         self.backbone = EfficientFPN(out_ch=fpn_ch)
 
-        self.sampler  = VoxelQuerySampler(
+        self.sampler = MultiCamVoxelSampler(
             xbound, ybound, zbound,
-            feat_ch=fpn_ch,
-            img_h=feat_h, img_w=feat_w)
+            feat_h=feat_h, feat_w=feat_w)
 
-        self.c2h      = C2HRefiner(feat_ch=fpn_ch, nZ=nZ, mid_ch=c2h_ch)
+        self.c2h = C2HRefiner(
+            in_ch=fpn_ch, nZ=self.nZ, mid_ch=c2h_ch)
 
         self.classifier = nn.Sequential(
             nn.Conv3d(c2h_ch, c2h_ch, 3, 1, 1, bias=False),
@@ -308,60 +310,59 @@ class FastOcc(nn.Module):
         )
 
         total = sum(p.numel() for p in self.parameters()) / 1e6
-        print(f"[FastOcc] 복셀: {nZ}×{nX}×{nY}  |  파라미터: {total:.1f}M")
+        print(f"[FastOcc] 6-Cam Surround | 복셀 {self.nZ}×{self.nX}×{self.nY}"
+              f" | 파라미터 {total:.1f}M")
 
     def forward(self,
-                img: torch.Tensor,
-                K:   torch.Tensor,
-                sensor2ego: torch.Tensor = None) -> torch.Tensor:
+                imgs: torch.Tensor,
+                Ks:   torch.Tensor,
+                sensor2ego: torch.Tensor) -> torch.Tensor:
         """
-        Parameters
-        ----------
-        img        : (B, 3, H, W)
-        K          : (B, 3, 3)   카메라 내부 파라미터
-        sensor2ego : (B, 4, 4)   카메라→ego 변환 (없으면 기본값)
+        imgs       : (B, N, 3, H, W)      6카메라 이미지
+        Ks         : (B, N, 3, 3)          각 카메라 내부 파라미터
+        sensor2ego : (B, N, 4, 4)          cam→ego 변환행렬
 
         Returns
         -------
         logits : (B, num_classes, nZ, nX, nY)
         """
-        # 1. 이미지 피처 추출
-        feat = self.backbone(img)                    # (B, fpn_ch, H/8, W/8)
+        B, N, _, H, W = imgs.shape
 
-        # 2. 복셀 쿼리 샘플링 (기하학적 투영 — LSS 아님)
-        vox  = self.sampler(feat, K, sensor2ego)     # (B, fpn_ch, nZ, nX, nY)
+        # 1. 6카메라 동시 인코딩 (배치로 처리)
+        imgs_flat = imgs.reshape(B * N, 3, H, W)
+        feats_flat = self.backbone(imgs_flat)             # (B*N, C, H/8, W/8)
+        _, C, Hf, Wf = feats_flat.shape
+        feats = feats_flat.reshape(B, N, C, Hf, Wf)      # (B, N, C, Hf, Wf)
 
-        # 3. Channel-to-Height 정제 (2D conv만 사용 — 빠름)
-        vox  = self.c2h(vox)                         # (B, c2h_ch, nZ, nX, nY)
+        # 2. 다중카메라 기하학적 복셀 샘플링 (LSS 아님)
+        vox = self.sampler(feats, Ks, sensor2ego)         # (B, C, nZ, nX, nY)
 
-        # 4. 분류
-        logits = self.classifier(vox)                # (B, num_classes, nZ, nX, nY)
+        # 3. Channel-to-Height 정제 (2D conv만 사용)
+        vox = self.c2h(vox)                               # (B, c2h_ch, nZ, nX, nY)
 
-        return logits
+        # 4. 3D 분류
+        return self.classifier(vox)                       # (B, nc, nZ, nX, nY)
 
 
-# ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
 # 동작 확인
-# ══════════════════════════════════════════════════════
-if __name__ == "__main__":
+# ══════════════════════════════════════════════════════════════
+if __name__ == '__main__':
+    B, N = 1, 6
     model = FastOcc(
-        xbound=(-25., 25., .5),
-        ybound=(-25., 25., .5),
+        xbound=(-50., 50., .5),
+        ybound=(-50., 50., .5),
         zbound=(-2.,  6.,  .5),
-        num_classes=5,
-        fpn_ch=128,
-        c2h_ch=64,
-        img_h=224,
-        img_w=400,
-    )
+        num_classes=5, fpn_ch=128, c2h_ch=64,
+        img_h=256, img_w=704, num_cams=6)
 
-    B = 1
-    img = torch.randn(B, 3, 224, 400)
-    K   = torch.eye(3).unsqueeze(0).repeat(B, 1, 1)
-    K[:, 0, 0] = 500; K[:, 1, 1] = 500
-    K[:, 0, 2] = 200; K[:, 1, 2] = 112
+    imgs = torch.randn(B, N, 3, 256, 704)
+    Ks   = torch.eye(3).view(1,1,3,3).repeat(B, N, 1, 1)
+    Ks[:,:,0,0] = 800; Ks[:,:,1,1] = 800
+    Ks[:,:,0,2] = 352; Ks[:,:,1,2] = 128
+    s2e  = torch.eye(4).view(1,1,4,4).repeat(B, N, 1, 1)
 
     with torch.no_grad():
-        out = model(img, K)
-    print(f"출력 shape: {out.shape}")   # (1, 5, 16, 100, 100)
-    print("FastOcc 동작 확인 완료 ✅")
+        out = model(imgs, Ks, s2e)
+    print(f"출력: {out.shape}")   # (1, 5, 16, 200, 200)
+    print("FastOcc 6-Cam 동작 확인 ✅")

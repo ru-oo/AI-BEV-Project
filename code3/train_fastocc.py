@@ -38,21 +38,22 @@ CFG = dict(
     # 데이터
     data_root   = '../data/sets/nuscenesmini',
     version     = 'v1.0-mini',
-    # 복셀 범위
-    xbound      = (-25., 25., .5),
-    ybound      = (-25., 25., .5),
+    # 복셀 범위 (6카메라 360° → 전/후/좌/우 50m)
+    xbound      = (-50., 50., .5),
+    ybound      = (-50., 50., .5),
     zbound      = (-2.,  6.,  .5),   # nZ = 16
-    # 이미지
-    img_h       = 224,
-    img_w       = 400,
+    # 이미지 (nuScenes 6-cam 표준 크기)
+    img_h       = 256,
+    img_w       = 704,
     # 모델
     fpn_ch      = 128,
     c2h_ch      = 64,
+    num_cams    = 6,
     # 학습
     epochs      = 150,
     patience    = 30,
-    batch_size  = 2,
-    accum_steps = 4,           # effective batch = 8
+    batch_size  = 1,           # 6카메라 × 256×704 → VRAM 고려
+    accum_steps = 8,           # effective batch = 8
     lr          = 2e-4,
     wd          = 1e-4,
     eval_every  = 5,
@@ -107,10 +108,10 @@ def calc_miou(model, loader, device, num_classes=NUM_CLASSES):
     fn = torch.zeros(num_classes)
 
     for imgs, Ks, s2e, gt in loader:
-        imgs = imgs.to(device, non_blocking=True)
-        Ks   = Ks.float().to(device)
-        s2e  = s2e.float().to(device)
-        gt   = gt.long().to(device)
+        imgs = imgs.to(device, non_blocking=True)  # (B,6,3,H,W)
+        Ks   = Ks.float().to(device)               # (B,6,3,3)
+        s2e  = s2e.float().to(device)              # (B,6,4,4)
+        gt   = gt.long().to(device)                # (B,nZ,nX,nY)
 
         with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
             logits = model(imgs, Ks, s2e)
@@ -194,15 +195,13 @@ def main():
                                xbound=CFG['xbound'],
                                ybound=CFG['ybound'],
                                zbound=CFG['zbound'],
-                               img_h=CFG['img_h'], img_w=CFG['img_w'],
-                               return_s2e=True)
+                               img_h=CFG['img_h'], img_w=CFG['img_w'])
     va_ds = NuScenesV3Dataset(CFG['data_root'], CFG['version'],
                                is_train=False,
                                xbound=CFG['xbound'],
                                ybound=CFG['ybound'],
                                zbound=CFG['zbound'],
-                               img_h=CFG['img_h'], img_w=CFG['img_w'],
-                               return_s2e=True)
+                               img_h=CFG['img_h'], img_w=CFG['img_w'])
 
     tr_loader = DataLoader(tr_ds, batch_size=CFG['batch_size'],
                             shuffle=True, num_workers=CFG['num_workers'],
@@ -212,7 +211,7 @@ def main():
                             pin_memory=(device.type == 'cuda'))
 
     # ── 모델 ──────────────────────────────────────────
-    print('\n[모델 초기화] FastOcc (LSS 아님 — 기하학적 복셀 샘플링 + C2H)')
+    print('\n[모델 초기화] FastOcc 6-Cam Surround (LSS 아님 — 기하학적 복셀 샘플링 + C2H)')
     model = FastOcc(
         xbound=CFG['xbound'],
         ybound=CFG['ybound'],
@@ -222,6 +221,7 @@ def main():
         c2h_ch=CFG['c2h_ch'],
         img_h=CFG['img_h'],
         img_w=CFG['img_w'],
+        num_cams=CFG['num_cams'],
     ).to(device)
 
     # ── 손실·옵티마이저·스케줄러 ──────────────────────
@@ -261,10 +261,10 @@ def main():
                     leave=True)
 
         for step, (imgs, Ks, s2e, gt) in enumerate(pbar, 1):
-            imgs = imgs.to(device, non_blocking=True)
-            Ks   = Ks.float().to(device)
-            s2e  = s2e.float().to(device)
-            gt   = gt.long().to(device)
+            imgs = imgs.to(device, non_blocking=True)   # (B,6,3,H,W)
+            Ks   = Ks.float().to(device)                # (B,6,3,3)
+            s2e  = s2e.float().to(device)               # (B,6,4,4)
+            gt   = gt.long().to(device)                 # (B,nZ,nX,nY)
 
             with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                 logits = model(imgs, Ks, s2e)
@@ -307,13 +307,13 @@ def main():
 
             # BEV 시각화 저장
             with torch.no_grad():
-                s_imgs, s_Ks, s_s2e, s_gt = next(iter(va_loader))
-                s_imgs = s_imgs.to(device)
-                s_Ks   = s_Ks.float().to(device)
-                s_s2e  = s_s2e.float().to(device)
-                pred_v = model(s_imgs, s_Ks, s_s2e)
+                sv_imgs, sv_Ks, sv_s2e, sv_gt = next(iter(va_loader))
+                sv_imgs = sv_imgs.to(device)
+                sv_Ks   = sv_Ks.float().to(device)
+                sv_s2e  = sv_s2e.float().to(device)
+                pred_v  = model(sv_imgs, sv_Ks, sv_s2e)
             p_np = pred_v[0].argmax(0).cpu().numpy()
-            g_np = s_gt[0].numpy()
+            g_np = sv_gt[0].numpy()
             vis_path = os.path.join(CFG['result_dir'],
                                      f'bev_epoch{epoch:03d}.jpg')
             bev_vis(g_np, p_np, epoch, vis_path)
@@ -405,13 +405,13 @@ def main():
 
     # ── 최종 BEV 시각화 ───────────────────────────────
     with torch.no_grad():
-        s_imgs, s_Ks, s_s2e, s_gt = next(iter(va_loader))
-        s_imgs = s_imgs.to(device)
-        s_Ks   = s_Ks.float().to(device)
-        s_s2e  = s_s2e.float().to(device)
-        pred_v = model(s_imgs, s_Ks, s_s2e)
+        fv_imgs, fv_Ks, fv_s2e, fv_gt = next(iter(va_loader))
+        fv_imgs = fv_imgs.to(device)
+        fv_Ks   = fv_Ks.float().to(device)
+        fv_s2e  = fv_s2e.float().to(device)
+        pred_v  = model(fv_imgs, fv_Ks, fv_s2e)
     p_np = pred_v[0].argmax(0).cpu().numpy()
-    g_np = s_gt[0].numpy()
+    g_np = fv_gt[0].numpy()
     bev_vis(g_np, p_np, 'Final', os.path.join(CFG['result_dir'], 'bev_final.jpg'))
 
     # ── train_info 저장 ────────────────────────────────
