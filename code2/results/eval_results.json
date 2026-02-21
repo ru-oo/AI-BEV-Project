@@ -2,36 +2,36 @@
   "model_path": "best_semantic_mini_model.pth",
   "dataset": "nuscenes-mini",
   "threshold": "argmax",
-  "mIoU_all": 25.18,
-  "mIoU_fg": 0.59,
+  "mIoU_all": 8.44,
+  "mIoU_fg": 1.48,
   "per_class": {
     "Empty": {
-      "iou": 0.989519,
-      "iou_pct": 98.95,
-      "tp": 63955991,
-      "fp": 662628,
-      "fn": 14778
+      "iou": 0.293246,
+      "iou_pct": 29.32,
+      "tp": 18720180,
+      "fp": 10,
+      "fn": 45117689
     },
     "Car": {
-      "iou": 0.0,
-      "iou_pct": 0.0,
-      "tp": 0,
-      "fp": 697,
-      "fn": 228416
+      "iou": 0.021319,
+      "iou_pct": 2.13,
+      "tp": 453853,
+      "fp": 20827589,
+      "fn": 7131
     },
     "Truck/Bus": {
-      "iou": 0.017798,
-      "iou_pct": 1.78,
-      "tp": 5809,
-      "fp": 13563,
-      "fn": 307006
+      "iou": 0.013132,
+      "iou_pct": 1.31,
+      "tp": 253164,
+      "fp": 19001003,
+      "fn": 24187
     },
     "Pedestrian/Bike": {
-      "iou": 1.5e-05,
-      "iou_pct": 0.0,
-      "tp": 2,
-      "fp": 1310,
-      "fn": 127998
+      "iou": 0.010029,
+      "iou_pct": 1.0,
+      "tp": 54095,
+      "fp": 5330106,
+      "fn": 9701
     }
   }
 }

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from nuscenes_dataset import NuScenesDataset
@@ -13,6 +14,24 @@ import time
 import matplotlib
 matplotlib.use('Agg')  # 디스플레이 없이 PNG 저장
 import matplotlib.pyplot as plt
+
+
+# --------------------------------------------------
+# Focal Loss: 극단적 클래스 불균형 (Empty 99%) 대응
+# gamma=2: 쉬운 샘플(Empty)의 기여를 낮추고, 어려운 샘플(Car 등)에 집중
+# --------------------------------------------------
+class FocalLoss(nn.Module):
+    def __init__(self, weight=None, gamma=2.0):
+        super().__init__()
+        self.weight = weight
+        self.gamma  = gamma
+
+    def forward(self, pred, target):
+        # pred: (B, C, ...), target: (B, ...)
+        ce   = F.cross_entropy(pred, target, weight=self.weight, reduction='none')
+        pt   = torch.exp(-ce)          # 예측 확률 (높을수록 쉬운 샘플)
+        loss = ((1 - pt) ** self.gamma) * ce   # 쉬운 샘플 페널티 감소
+        return loss.mean()
 
 # --------------------------------------------------
 # 1. LSS Model (유지)
@@ -144,8 +163,11 @@ def main():
                      dbound=[4, 45, 1],
                      num_classes=4).to(device)
 
-    class_weights = torch.tensor([0.5, 5.0, 5.0, 5.0]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # ★ 수정 ★ 실측 데이터 비율 기반 역빈도 가중치
+    # Empty가 전체 복셀의 ~99%를 차지하므로 전경 클래스를 대폭 강화
+    # [Empty, Car, Truck/Bus, Pedestrian]
+    class_weights = torch.tensor([0.1, 50.0, 40.0, 80.0]).to(device)
+    criterion = FocalLoss(weight=class_weights, gamma=2.0)
     
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate, 

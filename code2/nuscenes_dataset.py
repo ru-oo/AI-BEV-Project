@@ -95,11 +95,24 @@ class NuScenesDataset(torch.utils.data.Dataset):
         intrinsics = torch.stack(intrinsics_list)
         sensor2ego = torch.stack(sensor2ego_list)
 
-        # 2. [심화] Semantic GT 생성 (박스 기반)
-        # 라이다 데이터 대신 3D 박스 정보를 가져옵니다.
-        _, boxes, _ = self.nusc.get_sample_data(sample_record['data']['LIDAR_TOP'])
-        
-        # 박스를 복셀 그리드에 그리기
+        # 2. Semantic GT 생성 (박스 기반)
+        # ★ 핵심 버그 수정 ★
+        # get_sample_data()는 기본적으로 LIDAR 센서 좌표계로 박스를 반환합니다.
+        # 모델은 Ego 좌표계에서 예측하므로, 반드시 센서 -> Ego 변환이 필요합니다.
+        lidar_token = sample_record['data']['LIDAR_TOP']
+        lidar_sd    = self.nusc.get('sample_data', lidar_token)
+        lidar_cs    = self.nusc.get('calibrated_sensor', lidar_sd['calibrated_sensor_token'])
+
+        _, boxes, _ = self.nusc.get_sample_data(lidar_token)
+
+        # LIDAR 센서 좌표계 -> Ego 좌표계 변환 (rotate then translate)
+        lidar_rot   = Quaternion(lidar_cs['rotation'])
+        lidar_trans = np.array(lidar_cs['translation'])
+        for box in boxes:
+            box.rotate(lidar_rot)
+            box.translate(lidar_trans)
+
+        # 변환된 Ego 좌표계 박스를 복셀 그리드에 그리기
         gt_semantic = self.boxes_to_voxel(boxes)
 
         return imgs, intrinsics, sensor2ego, gt_semantic
