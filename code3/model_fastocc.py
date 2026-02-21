@@ -66,12 +66,13 @@ class EfficientFPN(nn.Module):
         print(f"[FastOcc] 백본: EfficientNet-B2 + FPN (out={out_ch}ch)")
 
     def forward(self, x):
-        c3 = self.s3(x)
-        c4 = self.s4(c3)
-        c5 = self.s5(c4)
+        c3 = self.s3(x)   # 48ch  @ H/8, W/8  (e.g. 28×50)
+        c4 = self.s4(c3)  # 120ch @ H/16,W/16 (e.g. 14×25)
+        c5 = self.s5(c4)  # 1408ch@ H/32,W/32 (e.g.  7×13)
         p5 = self.lat5(c5)
-        p4 = self.lat4(c4) + F.interpolate(p5, scale_factor=2, mode='nearest')
-        p3 = self.lat3(c3) + F.interpolate(p4, scale_factor=2, mode='nearest')
+        # 홀수 크기 불일치 방지: scale_factor 대신 size= 사용
+        p4 = self.lat4(c4) + F.interpolate(p5, size=c4.shape[-2:], mode='nearest')
+        p3 = self.lat3(c3) + F.interpolate(p4, size=c3.shape[-2:], mode='nearest')
         return self.out3(p3)   # (B, out_ch, H/8, W/8)
 
 
