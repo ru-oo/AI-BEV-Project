@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import json
+import os
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from nuscenes_dataset import NuScenesDataset
@@ -80,19 +82,39 @@ def evaluate_dataset():
     print("-" * 50)
 
     iou_list = []
+    result = {}
     for c in range(num_classes):
         denom = tp[c] + fp[c] + fn[c]
         iou = tp[c] / denom if denom > 0 else 0.0
         iou_list.append(iou)
+        result[CLASS_NAMES[c]] = {
+            "iou": round(float(iou), 6),
+            "iou_pct": round(float(iou * 100), 2),
+            "tp": int(tp[c]), "fp": int(fp[c]), "fn": int(fn[c]),
+        }
         print(f"  {CLASS_NAMES[c]:<16} {iou * 100:>7.2f}%  {tp[c]:>10}  {fp[c]:>10}  {fn[c]:>10}")
 
     mean_iou = np.mean(iou_list)
-    fg_iou = np.mean(iou_list[1:])  # Empty 제외
+    fg_iou = np.mean(iou_list[1:])
 
     print("=" * 50)
     print(f"  전체 mIoU (4 classes): {mean_iou * 100:.2f}%")
     print(f"  전경 mIoU (3 classes, Empty 제외): {fg_iou * 100:.2f}%")
     print("=" * 50)
+
+    # JSON 저장
+    os.makedirs("results", exist_ok=True)
+    eval_result = {
+        "model_path": model_path,
+        "dataset": "nuscenes-mini",
+        "threshold": "argmax",
+        "mIoU_all": round(float(mean_iou * 100), 2),
+        "mIoU_fg": round(float(fg_iou * 100), 2),
+        "per_class": result,
+    }
+    with open("results/eval_results.json", "w") as f:
+        json.dump(eval_result, f, indent=2, ensure_ascii=False)
+    print("\n평가 결과 저장: results/eval_results.json")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 import torch
 import numpy as np
+import os
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from torch.utils.data import DataLoader
@@ -147,7 +150,10 @@ def visualize_3d():
                bbox_to_anchor=(0.5, 0.01))
 
     plt.tight_layout(rect=[0, 0.05, 1, 0.97])
-    plt.show()
+    os.makedirs("results", exist_ok=True)
+    plt.savefig("results/semantic_bev_3d.png", dpi=120, bbox_inches='tight')
+    plt.close()
+    print("시각화 저장: results/semantic_bev_3d.png")
 
 
 if __name__ == "__main__":
