@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git --version)",
+      "Bash(git config:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git remote add:*)",
+      "Bash(git push:*)",
+      "Bash(python:*)",
+      "Bash(where:*)",
+      "Bash(/c/Users/KDT52/miniconda3/envs/ai_project/bin/python:*)",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" -c \"import torch; print\\(''CUDA:'', torch.cuda.is_available\\(\\)\\); print\\(''PyTorch:'', torch.__version__\\)\")",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" -c \"from nuscenes.nuscenes import NuScenes; nusc = NuScenes\\(version=''v1.0-mini'', dataroot=''C:/AI_Project/data/sets/nuscenesmini'', verbose=False\\); print\\(''샘플 수:'', len\\(nusc.sample\\)\\)\")",
+      "Bash(git checkout:*)",
+      "Bash(cmdkey /list)",
+      "Bash(powershell.exe -Command \"[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; $cred = [System.Net.CredentialCache]::DefaultNetworkCredentials; Write-Host $cred.UserName\")",
+      "Bash(ls:*)",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" save_loss_curve.py)",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" evaluate_all_3d.py)",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" visualize_3d.py)",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" check_result_3d.py)",
+      "Bash(echo:*)",
+      "Bash(git credential fill:*)",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" -c \":*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(\"/c/Users/KDT52/miniconda3/envs/ai_project/python.exe\" train.py)",
+      "Bash(dir \"C:\\\\AI_Project\\\\code2\\\\results\"\" 2>nul || echo \"Directory not found \")",
+      "Bash(cmd.exe /c \"dir C:\\\\AI_Project\\\\code2\\\\results\\\\ 2>nul || echo Not found\")",
+      "Bash(cmd.exe /c \"if exist C:\\\\AI_Project\\\\code2\\\\results\\\\train_log.csv \\(type C:\\\\AI_Project\\\\code2\\\\results\\\\train_log.csv\\) else \\(echo File not found\\)\")",
+      "Bash(cmd.exe /c \"dir C:\\\\AI_Project\\\\code2\\\\ /b\")",
+      "Bash(cmd.exe /c \"cd C:\\\\AI_Project\\\\code2 && C:\\\\Users\\\\KDT52\\\\miniconda3\\\\envs\\\\ai_project\\\\python.exe evaluate_all_3d.py 2>&1\")",
+      "Bash(/c/Users/KDT52/miniconda3/envs/ai_project/python.exe:*)"
+    ]
+  }
+}

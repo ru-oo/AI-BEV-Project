@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "FastOcc 학습 (mIoU 50%+ 목표)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["code3/train_fastocc.py"],
+      "port": 0
+    },
+    {
+      "name": "FastOcc 자율주행 데모 (웹캠, CAN 없음)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["code3/autonomous/main_demo.py", "--source", "0", "--no-can"],
+      "port": 0
+    },
+    {
+      "name": "모델 구조 확인 (FastOcc)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["code3/model_fastocc.py"],
+      "port": 0
+    }
+  ]
+}

@@ -13,7 +13,7 @@ A* 경로계획 결과를 STM32 보드에 CAN 통신으로 전달하는 완전�
 |------|----------|------|------|
 | v1 | `code2/` | LSS v1 (ResNet-18) | 초기 구현 |
 | v2 | `code2/` | LSS v2 (EfficientNet-B0) | SE-Attention, Dynamic FocalLoss |
-| **v3** | `code3/` | **FPVNet** (EfficientNet-B2) | **LSS 탈피 — 기하학적 투영, 단일 카메라** |
+| **v3** | `code3/` | **FastOcc** (EfficientNet-B2) | **LSS 탈피 — 기하학적 복셀 샘플링 + Channel-to-Height** |
 
 ---
 
@@ -51,52 +51,49 @@ A* 경로계획 결과를 STM32 보드에 CAN 통신으로 전달하는 완전�
 
 ---
 
-## FPVNet vs LSS 비교
+## FastOcc vs LSS 비교
 
-| 항목 | LSS (v2) | **FPVNet (v3)** |
+| 항목 | LSS (v2) | **FastOcc (v3)** |
 |------|----------|-----------------|
-| 접근 방식 | 학습된 깊이 분포(D bins) → frustum pooling | **명시적 깊이 예측 → 기하학적 3D 투영** |
-| 카메라 수 | 6 (멀티카메라 필수) | **1 (단일 전방 카메라)** |
-| 백본 | EfficientNet-B0 | **EfficientNet-B2 (더 강력)** |
-| 파라미터 | 6.5M | **~14M** |
-| 핵심 연산 | voxel pooling (splat) | **scatter_add 기하학적 투영** |
-| 해석 가능성 | 낮음 (블랙박스) | **높음 (depth 맵 시각화 가능)** |
-| 이미지 해상도 | 1056×384 | **400×224 (3.5배 메모리 절약)** |
+| 3D 투영 방식 | 학습된 D-bin 깊이 분포 → frustum voxel pooling | **복셀 중심 기하학적 투영 → grid_sample (깊이 학습 불필요)** |
+| 3D 처리 | 3D voxel pool + 3D conv | **Channel-to-Height (C2H): 2D conv만으로 3D 표현** |
+| 카메라 수 | 6 (멀티카메라) | **1 (단일 전방 카메라)** |
+| 백본 | EfficientNet-B0 | **EfficientNet-B2 + FPN** |
+| 핵심 연산 | splat (frustum pooling) | **grid_sample + C2H reshape** |
+| VRAM | 높음 (frustum volume) | **낮음 (2D 연산 중심)** |
+| 이미지 해상도 | 1056×384 | **400×224 (3.5배 절약)** |
 | 클래스 | 4 | **5 (Road 추가)** |
 
 ---
 
-## 모델 구조 (FPVNet)
+## 모델 구조 (FastOcc v3)
 
 ```
-1× Camera (400×224)
-       │
-       ▼  (÷2 다운샘플)
-[EfficientNet-B2] stage3→stage4→stage5
+1× 전방 카메라 (400×224)
        │
        ▼
-[FPN Neck] P3/P4/P5 멀티스케일 → 128ch
-       │
-  ┌────┴────┐
-  ▼         ▼
-[Depth    [Sem
- Head]     Head]
- ASPP      ASPP
-  │          │
-metric    2D semantic
-depth      logits
-  │          │
-  └────┬─────┘
-       ▼
-[기하학적 투영]
-  u,v,d → x_cam,y_cam,z_cam
-  → 복셀 인덱스 → scatter_add
+[EfficientNet-B2] stage3→4→5
        │
        ▼
-[3D Refine CNN]  ← 3×3×3 conv 2층
+[FPN Neck] P3/P4/P5 → 128ch
        │
        ▼
-(B, 5class, nZ, 100, 100)
+[Voxel Query Sampler]  ★ LSS 아님 ★
+  복셀 중심(x,y,z) → K로 이미지 투영
+  → bilinear grid_sample (깊이 분포 없음)
+  → (B, 128, nZ, nX, nY)
+       │
+       ▼
+[Channel-to-Height (C2H) Refiner]
+  (B, 128*nZ, nX, nY) → depthwise 2D conv
+  → pointwise → (B, 64*nZ, nX, nY)
+  → reshape → (B, 64, nZ, nX, nY)
+       │
+       ▼
+[3D Classifier] 3D conv × 2
+       │
+       ▼
+(B, 5class, 16, 100, 100)
 ```
 
 ---
