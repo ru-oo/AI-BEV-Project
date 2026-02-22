@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "C:\AI_Project\code3\train_fastocc.py", line 26, in <module>
+    from tqdm import tqdm
+ModuleNotFoundError: No module named 'tqdm'

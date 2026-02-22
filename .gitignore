@@ -1,4 +1,6 @@
-# 모델 가중치 파일 (용량 큼 - Git LFS 사용 권장)
+# 모델 가중치 파일 (대용량은 LFS 권장)
+# best checkpoint는 추적 허용
+!best_fastocc*.pth
 *.pth
 *.pt
 *.ckpt

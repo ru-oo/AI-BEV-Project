@@ -1,0 +1,16 @@
+{
+  "model": "FastOcc (EfficientNet-B2 + FPN + VoxelQuerySampler + C2H)",
+  "approach": "Geometric voxel sampling + Channel-to-Height (NOT LSS)",
+  "epochs_trained": 150,
+  "best_loss": 0.200255,
+  "best_fg_miou": 0.2565,
+  "final_iou": {
+    "Free": 0.9888,
+    "Road": 0.9748,
+    "Vehicle": 0.0512,
+    "Pedestrian": 0.0,
+    "StaticObst": 0.0
+  },
+  "final_fg_miou": 0.2565,
+  "elapsed_min": 1072.2
+}
