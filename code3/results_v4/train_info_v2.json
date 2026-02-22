@@ -1,0 +1,15 @@
+{
+  "model": "FastOcc v2 (LovászLoss + ExtremeWeights + LiDARGT)",
+  "epochs_trained": 99,
+  "best_loss": 0.611293,
+  "best_fg_miou": 0.2447,
+  "final_iou": {
+    "Free": 0.5395,
+    "Road": 0.9477,
+    "Vehicle": 0.0283,
+    "Pedestrian": 0.0028,
+    "StaticObst": 0.0
+  },
+  "final_fg_miou": 0.2447,
+  "elapsed_min": 262.0
+}
