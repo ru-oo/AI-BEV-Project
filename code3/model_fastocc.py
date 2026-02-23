@@ -191,11 +191,14 @@ class MultiCamVoxelSampler(nn.Module):
         grid = torch.stack([u_n, v_n], dim=-1)            # (B, N, M, 2)
         grid = grid.reshape(B * N, 1, -1, 2)              # (B*N, 1, M, 2)
 
+        # ★ Fix: FP16 autocast 환경에서 grid_sample 기울기 언더플로우 방지
+        # PyTorch FP16으로 좌표가 작아지면 gradient→0/NaN 발생 (Ped 등 희소 클래스 mIoU=0 원인)
+        # feats와 grid 모두 float32로 명시 캐스팅 후 샘플링
         sampled = F.grid_sample(
-            feats_flat, grid,
+            feats_flat.float(), grid.float(),
             mode='bilinear',
             padding_mode='zeros',
-            align_corners=True)                            # (B*N, C, 1, M)
+            align_corners=True)                            # (B*N, C, 1, M) float32
         sampled = sampled.reshape(B, N, C, -1)             # (B, N, C, M)
 
         # 유효하지 않은 위치 마스킹
