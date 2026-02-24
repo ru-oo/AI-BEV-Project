@@ -1,9 +1,9 @@
 # 모델 가중치 파일 (대용량은 LFS 권장)
-# best checkpoint는 추적 허용
-!best_fastocc*.pth
 *.pth
 *.pt
 *.ckpt
+# best checkpoint는 추적 허용 (예외 규칙은 일반 규칙 뒤에 위치해야 함)
+!best_fastocc*.pth
 
 # 데이터셋 (용량 큼)
 data/

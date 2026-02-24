@@ -1,0 +1,22 @@
+{
+  "model": "FastOcc v3 (Binary PreTrain → 5-class FineTune)",
+  "fixes_applied": [
+    "Fix2: num_workers=4, gc.collect() 주기 최적화",
+    "Fix3: grid_sample FP32 캐스팅 (model_fastocc.py)",
+    "Fix4: gradient accum 마지막 배치 처리",
+    "Fix5: box_dilate=0 (Lovász 호환)",
+    "Fix6: Binary Pre-training → 5-class Fine-tuning"
+  ],
+  "ph1_epochs": 50,
+  "ph2_epochs_trained": 150,
+  "best_loss": 0.533633,
+  "best_fg_miou": 0.2467,
+  "final_iou": {
+    "Free": 0.8694,
+    "Road": 0.9754,
+    "Vehicle": 0.0114,
+    "Pedestrian": 0.0,
+    "StaticObst": 0.0
+  },
+  "final_fg_miou": 0.2467
+}
